@@ -18,7 +18,7 @@
 > 2.解压文件，将E-IMG Slices.exe至您常用位置(如无后缀名则为E-IMG Slices)  </br>
 > 3.双击打开即可使用（见下方"使用说明"）  </br>
 - **从源码运行（Windows）**
-> 基于v1.0-Release
+> 基于v1.0-Release</br>
 > 1.克隆或下载本项目</br>
 > 2.安装python运行环境👉[Python](https://www.runoob.com)(https://www.python.org/)</br>
 > 3.安装第三方库👉命令提示符执行:`pip install PyQt5 Pillow`</br>
