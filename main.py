@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
                              QComboBox, QMessageBox, QTextEdit, QGroupBox, QSplitter,
                              QLineEdit, QMenuBar, QMenu, QStatusBar, QFrame, QScrollArea,
                              QProgressBar, QAction, QDialog, QTextBrowser, QDialogButtonBox,
-                             QCheckBox)
-from PyQt5.QtCore import Qt, QUrl
+                             QCheckBox, QFormLayout)
+from PyQt5.QtCore import Qt, QUrl, QTimer
 from PyQt5.QtGui import QPixmap, QImage, QIcon, QDesktopServices, QTextCursor, QColor
 
 DEBUG_MODE = True
@@ -25,13 +25,55 @@ def get_resource_path(relative_path):
     
     return os.path.join(base_path, relative_path)
 
+def get_documents_path():
+    """获取系统文档文件夹路径"""
+    try:
+        import ctypes
+        from ctypes import wintypes, windll
+        
+        # 使用Windows API获取文档文件夹路径
+        CSIDL_PERSONAL = 5  # My Documents
+        SHGFP_TYPE_CURRENT = 0  # 获取当前路径，不是默认值
+        
+        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+        windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+        
+        return buf.value
+    except:
+        # 如果失败，使用默认路径
+        return os.path.join(os.path.expanduser('~'), 'Documents')
+
+def parse_command_line():
+    """解析命令行参数"""
+    if len(sys.argv) > 1:
+        # 第一个参数是程序自身，后面的参数是拖放的文件
+        file_paths = []
+        for arg in sys.argv[1:]:
+            # 检查是否是有效的图片文件
+            if os.path.exists(arg) and arg.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif', '.webp')):
+                file_paths.append(arg)
+        return file_paths
+    return []
+
 class AppConfig:
     def __init__(self):
-        self.config_dir = os.path.join(os.getenv('APPDATA'), 'E-IMG Slices')
+        # 修改配置存储位置为 文档\E-IMG Slices\Config
+        docs_path = get_documents_path()
+        self.config_dir = os.path.join(docs_path, 'E-IMG Slices', 'Config')
         self.config_file = os.path.join(self.config_dir, 'config.json')
+        
+        # 默认配置值
         self.debug_mode = False 
         self.auto_create_folder = True 
         self.folder_name = "Slices" 
+        
+        # 新增：默认切片设置
+        self.default_slice_name = ""  # 留空则使用图片名称
+        self.default_slice_format = "JPG"
+        self.default_slice_direction = "纵向"
+        self.default_slice_method = "按大小切片"
+        self.default_slice_size = 1080
+        self.default_slice_count = 16
         
         os.makedirs(self.config_dir, exist_ok=True)
         self.load_config()
@@ -44,7 +86,16 @@ class AppConfig:
                     config_data = json.load(f)
                     self.auto_create_folder = config_data.get('auto_create_folder', True)
                     self.folder_name = config_data.get('folder_name', "Slices")
-            except:
+                    
+                    # 加载新的默认设置
+                    self.default_slice_name = config_data.get('default_slice_name', "")
+                    self.default_slice_format = config_data.get('default_slice_format', "JPG")
+                    self.default_slice_direction = config_data.get('default_slice_direction', "纵向")
+                    self.default_slice_method = config_data.get('default_slice_method', "按大小切片")
+                    self.default_slice_size = config_data.get('default_slice_size', 1080)
+                    self.default_slice_count = config_data.get('default_slice_count', 16)
+            except Exception as e:
+                print(f"加载配置失败: {e}")
                 self.auto_create_folder = True
                 self.folder_name = "Slices"
     
@@ -53,13 +104,153 @@ class AppConfig:
         config_data = {
             'debug_mode': False,  
             'auto_create_folder': self.auto_create_folder,
-            'folder_name': self.folder_name
+            'folder_name': self.folder_name,
+            
+            # 保存新的默认设置
+            'default_slice_name': self.default_slice_name,
+            'default_slice_format': self.default_slice_format,
+            'default_slice_direction': self.default_slice_direction,
+            'default_slice_method': self.default_slice_method,
+            'default_slice_size': self.default_slice_size,
+            'default_slice_count': self.default_slice_count
         }
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=4)
-        except:
-            pass
+        except Exception as e:
+            print(f"保存配置失败: {e}")
+
+class SettingsWindow(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.config = parent.config if parent else AppConfig()
+        self.setWindowTitle("设置")
+        self.setModal(True)
+        self.setFixedSize(400, 500)
+        
+        self.init_ui()
+        self.load_settings()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # 默认切片设置组
+        settings_group = QGroupBox("默认切片设置")
+        form_layout = QFormLayout(settings_group)
+        
+        # 默认切片文件名称
+        self.default_name_edit = QLineEdit()
+        self.default_name_edit.setPlaceholderText("留空则使用图片名称")
+        form_layout.addRow("默认切片文件名称:", self.default_name_edit)
+        
+        # 默认切片输出格式
+        self.default_format_combo = QComboBox()
+        self.default_format_combo.addItems(["JPG", "PNG"])
+        form_layout.addRow("默认切片输出格式:", self.default_format_combo)
+        
+        # 默认切片方向
+        self.default_direction_combo = QComboBox()
+        self.default_direction_combo.addItems(["横向", "纵向"])
+        form_layout.addRow("默认切片方向:", self.default_direction_combo)
+        
+        # 默认切片方式
+        self.default_method_combo = QComboBox()
+        self.default_method_combo.addItems(["按大小切片", "按数量切片"])
+        form_layout.addRow("默认切片方式:", self.default_method_combo)
+        
+        # 默认切片大小
+        self.default_size_spin = QSpinBox()
+        self.default_size_spin.setMinimum(1)
+        self.default_size_spin.setMaximum(10000)
+        form_layout.addRow("默认切片大小:", self.default_size_spin)
+        
+        # 默认切片份数
+        self.default_count_spin = QSpinBox()
+        self.default_count_spin.setMinimum(1)
+        self.default_count_spin.setMaximum(1000)
+        form_layout.addRow("默认切片份数:", self.default_count_spin)
+        
+        layout.addWidget(settings_group)
+        
+        # 按钮布局
+        button_layout = QHBoxLayout()
+        self.save_btn = QPushButton("保存")
+        self.cancel_btn = QPushButton("取消")
+        self.apply_btn = QPushButton("应用")
+        
+        button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.apply_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # 连接信号
+        self.save_btn.clicked.connect(self.save_and_close)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.apply_btn.clicked.connect(self.apply_settings)
+        
+        # 连接切片方式变化事件
+        self.default_method_combo.currentIndexChanged.connect(self.update_settings_visibility)
+        self.update_settings_visibility()
+    
+    def update_settings_visibility(self):
+        """根据切片方式显示/隐藏相关设置"""
+        method = self.default_method_combo.currentText()
+        is_size_method = (method == "按大小切片")
+        
+        # 显示/隐藏相关控件
+        self.default_size_spin.setVisible(is_size_method)
+        self.default_count_spin.setVisible(not is_size_method)
+        
+        # 更新表单布局的标签
+        form_layout = self.layout().itemAt(0).widget().layout()
+        if isinstance(form_layout, QFormLayout):
+            # 获取标签项并设置可见性
+            for i in range(form_layout.rowCount()):
+                item = form_layout.itemAt(i, QFormLayout.LabelRole)
+                if item and item.widget():
+                    label_text = item.widget().text()
+                    if "默认切片大小" in label_text:
+                        item.widget().setVisible(is_size_method)
+                    elif "默认切片份数" in label_text:
+                        item.widget().setVisible(not is_size_method)
+    
+    def load_settings(self):
+        """加载当前设置"""
+        self.default_name_edit.setText(self.config.default_slice_name)
+        self.default_format_combo.setCurrentText(self.config.default_slice_format)
+        self.default_direction_combo.setCurrentText(self.config.default_slice_direction)
+        self.default_method_combo.setCurrentText(self.config.default_slice_method)
+        self.default_size_spin.setValue(self.config.default_slice_size)
+        self.default_count_spin.setValue(self.config.default_slice_count)
+    
+    def apply_settings(self):
+        """应用设置但不关闭窗口"""
+        try:
+            self.config.default_slice_name = self.default_name_edit.text().strip()
+            self.config.default_slice_format = self.default_format_combo.currentText()
+            self.config.default_slice_direction = self.default_direction_combo.currentText()
+            self.config.default_slice_method = self.default_method_combo.currentText()
+            self.config.default_slice_size = self.default_size_spin.value()
+            self.config.default_slice_count = self.default_count_spin.value()
+            
+            self.config.save_config()
+            
+            # 更新主窗口的设置
+            if self.parent:
+                self.parent.apply_default_settings()
+            
+            QMessageBox.information(self, "成功", "设置已应用！")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"应用设置失败: {str(e)}")
+    
+    def save_and_close(self):
+        """保存设置并关闭窗口"""
+        self.apply_settings()
+        self.accept()
 
 class AboutWindow(QDialog):
     def __init__(self, parent=None):
@@ -130,7 +321,9 @@ class DebugLogWindow(QDialog):
         self.interrupt_btn.clicked.connect(self.interrupt_task)
         self.close_btn.clicked.connect(self.accept)
         
-        self.log_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'E-IMG Slices Log')
+        # 修改日志存储位置为 文档\E-IMG Slices\Log
+        docs_path = get_documents_path()
+        self.log_dir = os.path.join(docs_path, 'E-IMG Slices', 'Log')
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(self.log_dir, f"debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
         
@@ -195,9 +388,140 @@ class ImageSlicer(QMainWindow):
         self.config = AppConfig()
         self.debug_window = None
         self.is_slicing = False
+        self.auto_export_on_startup = False  # 添加这个属性
         
         debug_print("程序启动，初始化界面...")
         self.initUI()
+        self.apply_default_settings()  # 应用默认设置
+        
+    def apply_default_settings(self):
+        """应用默认设置到界面"""
+        # 设置默认值
+        self.name_edit.setText(self.config.default_slice_name)
+        self.format_combo.setCurrentText(self.config.default_slice_format)
+        self.direction_combo.setCurrentText(self.config.default_slice_direction)
+        self.method_combo.setCurrentText(self.config.default_slice_method)
+        
+        if self.config.default_slice_method == "按大小切片":
+            self.param_spin.setValue(self.config.default_slice_size)
+        else:
+            self.param_spin.setValue(self.config.default_slice_count)
+        
+        self.update_param_hint()  # 更新参数标签
+        
+    def handle_dropped_file_at_startup(self, file_path):
+        """处理程序启动时拖放的文件"""
+        try:
+            self.debug_log(f"处理启动时拖放的文件: {file_path}", "AUTO_EXPORT", "blue")
+            
+            # 加载图片
+            self.load_image_from_path(file_path)
+            
+            if not self.image:
+                self.debug_log("无法加载图片，取消自动导出", "AUTO_EXPORT", "red")
+                return
+            
+            # 设置为自动导出模式
+            self.auto_export_on_startup = True
+            
+            # 应用默认设置（使用配置中的按大小切片设置）
+            self.apply_default_settings()
+            
+            # 确保使用按大小切片方式
+            self.method_combo.setCurrentText(self.config.default_slice_method)
+            
+            self.debug_log("设置已应用，准备自动导出", "AUTO_EXPORT", "blue")
+            
+            # 延迟执行自动导出，确保UI完全更新
+            QTimer.singleShot(1000, self.auto_quick_export)
+            
+        except Exception as e:
+            self.debug_log(f"处理拖放文件失败: {str(e)}", "ERROR", "red")
+            QMessageBox.critical(self, "错误", f"处理拖放文件失败: {str(e)}")
+    
+    def auto_quick_export(self):
+        """自动执行快速导出"""
+        try:
+            if not self.image or not self.auto_export_on_startup:
+                return
+            
+            self.debug_log("开始自动快速导出", "AUTO_EXPORT", "blue")
+            
+            # 获取当前设置
+            direction = self.direction_combo.currentText()
+            method = self.method_combo.currentText()
+            param = self.param_spin.value()
+            base_name = self.name_edit.text().strip() or os.path.splitext(os.path.basename(self.image_path))[0]
+            file_format = self.format_combo.currentText().lower()
+            
+            self.debug_log(f"自动导出设置 - 方向: {direction}, 方法: {method}, 参数: {param}, 名称: {base_name}, 格式: {file_format}", "AUTO_EXPORT", "blue")
+            
+            # 使用图片所在目录作为保存目录
+            image_dir = os.path.dirname(self.image_path)
+            save_dir = image_dir
+            
+            self.debug_log(f"自动导出目录: {save_dir}", "AUTO_EXPORT", "blue")
+            
+            # 自动创建文件夹
+            if self.config.auto_create_folder:
+                folder_name = self.config.folder_name.strip() or "Slices"
+                save_dir = os.path.join(save_dir, folder_name)
+                os.makedirs(save_dir, exist_ok=True)
+                self.debug_log(f"已创建输出文件夹: {save_dir}", "AUTO_EXPORT", "green")
+            
+            # 检查文件冲突
+            conflict_files = self.check_all_file_conflicts(save_dir, base_name, file_format, direction, method, param)
+            
+            if conflict_files:
+                self.debug_log(f"发现 {len(conflict_files)} 个文件冲突", "WARNING", "orange")
+                # 自动模式下自动覆盖
+                self.debug_log("自动模式：自动覆盖现有文件", "AUTO_EXPORT", "orange")
+            
+            self.set_progress_status("正在自动导出...", "blue")
+            
+            # 执行切片
+            if method == "按大小切片":
+                result = self.slice_by_size(direction, param, save_dir, base_name, file_format, conflict_files)
+            else:
+                result = self.slice_by_count(direction, param, save_dir, base_name, file_format, conflict_files)
+            
+            if result:
+                self.debug_log("自动导出完成", "AUTO_EXPORT", "green")
+                self.set_progress_status("自动导出完成", "green")
+                
+                # 显示完成提示，使用三个按钮
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("完成")
+                msg_box.setText(f"图片已自动切片并保存到:\n{save_dir}")
+                msg_box.setIcon(QMessageBox.Information)
+
+                # 添加三个按钮
+                ok_button = msg_box.addButton("OK", QMessageBox.AcceptRole)
+                exit_button = msg_box.addButton("退出", QMessageBox.RejectRole)
+                view_button = msg_box.addButton("查看", QMessageBox.ActionRole)
+                
+                # 设置默认按钮
+                msg_box.setDefaultButton(ok_button)
+                
+                msg_box.exec_()
+                
+                clicked_button = msg_box.clickedButton()
+                
+                if clicked_button == view_button:
+                    self.debug_log("用户点击查看按钮，打开输出目录", "AUTO_EXPORT", "blue")
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
+                elif clicked_button == exit_button:
+                    self.debug_log("用户点击退出按钮，关闭程序", "AUTO_EXPORT", "blue")
+                    self.close()  # 关闭程序
+            
+            # 重置自动导出标志
+            self.auto_export_on_startup = False
+            
+        except Exception as e:
+            self.debug_log(f"自动导出失败: {str(e)}", "ERROR", "red")
+            self.set_progress_status("自动导出失败", "red")
+            QMessageBox.critical(self, "错误", f"自动导出失败: {str(e)}")
+            self.auto_export_on_startup = False
         
     def initUI(self):
         self.setWindowTitle('E-IMG 图片切片工具')
@@ -211,19 +535,15 @@ class ImageSlicer(QMainWindow):
 
         self.createMenuBar()
         
-
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-
         main_layout = QHBoxLayout(central_widget)
         
-
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setSpacing(10)
         
-
         self.drop_label = QLabel()
         self.drop_label.setAlignment(Qt.AlignCenter)
         self.drop_label.setText("拖放图片到这里或点击\"加载图片\"")
@@ -276,18 +596,17 @@ class ImageSlicer(QMainWindow):
         direction_layout.addWidget(QLabel("切片方向:"))
         self.direction_combo = QComboBox()
         self.direction_combo.addItems(["横向", "纵向"])
-        self.direction_combo.setCurrentIndex(1)  
         direction_layout.addWidget(self.direction_combo)
         
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel("切片方式:"))
         self.method_combo = QComboBox()
         self.method_combo.addItems(["按大小切片", "按数量切片"])
-        self.method_combo.setCurrentIndex(0)  
         method_layout.addWidget(self.method_combo)
         
         param_layout = QHBoxLayout()
-        param_layout.addWidget(QLabel("参数值:"))
+        self.param_label = QLabel("参数值:")  # 初始文本，后续会更新
+        param_layout.addWidget(self.param_label)
         self.param_spin = QSpinBox()
         self.param_spin.setMinimum(1)
         self.param_spin.setMaximum(10000)
@@ -310,8 +629,11 @@ class ImageSlicer(QMainWindow):
         self.load_btn = QPushButton("加载图片")
         self.slice_btn = QPushButton("开始切片")
         self.slice_btn.setEnabled(False)
+        self.quick_export_btn = QPushButton("快速导出")
+        self.quick_export_btn.setEnabled(False)
         button_layout.addWidget(self.load_btn)
         button_layout.addWidget(self.slice_btn)
+        button_layout.addWidget(self.quick_export_btn)
         
         settings_layout.addLayout(name_layout)
         settings_layout.addLayout(format_layout)
@@ -351,6 +673,7 @@ class ImageSlicer(QMainWindow):
         
         self.load_btn.clicked.connect(self.load_image)
         self.slice_btn.clicked.connect(self.slice_image)
+        self.quick_export_btn.clicked.connect(self.quick_export)
         self.method_combo.currentIndexChanged.connect(self.update_param_hint)
         self.direction_combo.currentIndexChanged.connect(self.update_preview_if_enabled)
         self.param_spin.valueChanged.connect(self.update_preview_if_enabled)
@@ -361,12 +684,38 @@ class ImageSlicer(QMainWindow):
         self.drop_label.dragEnterEvent = self.dragEnterEvent
         self.drop_label.dropEvent = self.dropEvent
         
-        debug_print("界面初始化完成")
+        # 为快速导出按钮单独设置样式
+        self.quick_export_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFA726;
+                border: none;
+                color: white;
+                padding: 8px 16px;
+                text-align: center;
+                text-decoration: none;
+                font-size: 14px;
+                margin: 4px 2px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #FFCC80;
+            }
+            QPushButton:pressed {
+                background-color: #FFD54F;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
         
+        debug_print("界面初始化完成")
+    
     def closeEvent(self, event):
         """重写关闭事件，确保debug窗口也关闭"""
         if self.debug_window:
             self.debug_window.close()
+        self.auto_export_on_startup = False  # 添加这行
         event.accept()
         
     def set_progress_status(self, text, color="gray"):
@@ -399,6 +748,11 @@ class ImageSlicer(QMainWindow):
         self.debug_action.setChecked(False)  
         self.debug_action.triggered.connect(self.toggle_debug)
         function_menu.addAction(self.debug_action)
+        
+        # 添加设置菜单
+        settings_action = QAction('设置', self)
+        settings_action.triggered.connect(self.open_settings)
+        function_menu.addAction(settings_action)
 
         about_menu = menubar.addMenu('帮助')
         
@@ -407,6 +761,11 @@ class ImageSlicer(QMainWindow):
         
         github_action = about_menu.addAction('GitHub项目页')
         github_action.triggered.connect(self.openGithubUrl)
+    
+    def open_settings(self):
+        """打开设置窗口"""
+        settings_window = SettingsWindow(self)
+        settings_window.exec_()
         
     def toggle_debug(self, checked):
         """切换Debug模式"""
@@ -445,7 +804,7 @@ class ImageSlicer(QMainWindow):
         
     def createStatusBar(self):
         self.statusbar = QStatusBar()
-        self.statusbar.showMessage("E-IMG Slices | V1.1-Beta")
+        self.statusbar.showMessage("E-IMG Slices | V1.4-Beta")
         self.setStatusBar(self.statusbar)
         
     def openGithubUrl(self):
@@ -453,8 +812,7 @@ class ImageSlicer(QMainWindow):
         self.restoreStatusBar()
         
     def restoreStatusBar(self):
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(100, lambda: self.statusbar.showMessage("E-IMG Slices | V1.1-Beta"))
+        QTimer.singleShot(100, lambda: self.statusbar.showMessage("E-IMG Slices | V1.4-Beta"))
         
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -525,6 +883,7 @@ class ImageSlicer(QMainWindow):
             
             self.show_image_info()
             self.slice_btn.setEnabled(True)
+            self.quick_export_btn.setEnabled(True)
             self.debug_log(f"图片加载完成: {os.path.basename(file_path)}", "LOAD", "green")
 
             try:
@@ -549,6 +908,7 @@ class ImageSlicer(QMainWindow):
             self.image = None
             self.image_path = None
             self.slice_btn.setEnabled(False)
+            self.quick_export_btn.setEnabled(False)
             self.drop_label.setText("拖放图片到这里或点击\"加载图片\"")
             self.drop_label.setStyleSheet("""
                 QLabel {
@@ -568,11 +928,14 @@ class ImageSlicer(QMainWindow):
             self.preview_text.clear()
     
     def update_param_hint(self):
+        """更新参数标签和提示"""
         if self.method_combo.currentText() == "按大小切片":
             self.param_spin.setSuffix(" 像素")
+            self.param_label.setText("切片大小:")  # 修改标签文本
             self.debug_log("切片方式切换为: 按大小切片", "SETTING", "blue")
         else:
             self.param_spin.setSuffix(" 份")
+            self.param_label.setText("切片份数:")  # 修改标签文本
             self.debug_log("切片方式切换为: 按数量切片", "SETTING", "blue")
         self.update_preview_if_enabled()
     
@@ -799,6 +1162,99 @@ class ImageSlicer(QMainWindow):
             if self.debug_window:
                 self.debug_window.interrupt_btn.setEnabled(False)
     
+    def quick_export(self):
+        """快速导出功能 - 将切片导出到加载图片所在路径"""
+        if not self.image or not self.image_path:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+            
+        try:
+            self.debug_log("开始快速导出操作", "QUICK_EXPORT", "blue")
+            self.is_slicing = True
+            if self.debug_window:
+                self.debug_window.interrupt_btn.setEnabled(True)
+                self.debug_window.is_task_interrupted = False
+            
+            direction = self.direction_combo.currentText()
+            method = self.method_combo.currentText()
+            param = self.param_spin.value()
+            base_name = self.name_edit.text().strip() or os.path.splitext(os.path.basename(self.image_path))[0]
+            file_format = self.format_combo.currentText().lower()
+            
+            self.debug_log(f"快速导出设置 - 方向: {direction}, 方法: {method}, 参数: {param}, 名称: {base_name}, 格式: {file_format}", "QUICK_EXPORT", "blue")
+
+            # 使用图片所在目录作为保存目录
+            image_dir = os.path.dirname(self.image_path)
+            save_dir = image_dir
+            
+            self.debug_log(f"快速导出目录: {save_dir}", "QUICK_EXPORT", "blue")
+            
+            # 自动创建文件夹
+            if self.config.auto_create_folder:
+                folder_name = self.config.folder_name.strip() or "Slices"
+                save_dir = os.path.join(save_dir, folder_name)
+                os.makedirs(save_dir, exist_ok=True)
+                self.debug_log(f"已创建输出文件夹: {save_dir}", "QUICK_EXPORT", "green")
+
+            conflict_files = self.check_all_file_conflicts(save_dir, base_name, file_format, direction, method, param)
+            
+            if conflict_files:
+                self.debug_log(f"发现 {len(conflict_files)} 个文件冲突: {conflict_files}", "WARNING", "orange")
+                reply = QMessageBox.question(self, "文件冲突", 
+                                            f"发现 {len(conflict_files)} 个文件已存在，是否全部覆盖？",
+                                            QMessageBox.Yes | QMessageBox.No,
+                                            QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    self.debug_log("用户取消覆盖操作", "QUICK_EXPORT", "orange")
+                    self.set_progress_status("操作取消", "orange")
+                    self.is_slicing = False
+                    if self.debug_window:
+                        self.debug_window.interrupt_btn.setEnabled(False)
+                    return
+                else:
+                    self.debug_log("用户确认覆盖现有文件", "QUICK_EXPORT", "orange")
+            else:
+                self.debug_log("无文件冲突", "QUICK_EXPORT", "green")
+                
+            self.set_progress_status("正在快速导出...", "blue")
+            QApplication.processEvents()  
+            
+            if method == "按大小切片":
+                self.debug_log("使用按大小切片方法", "QUICK_EXPORT", "blue")
+                result = self.slice_by_size(direction, param, save_dir, base_name, file_format, conflict_files)
+            else:
+                self.debug_log("使用按数量切片方法", "QUICK_EXPORT", "blue")
+                result = self.slice_by_count(direction, param, save_dir, base_name, file_format, conflict_files)
+            
+            if result:
+                self.debug_log("快速导出完成", "QUICK_EXPORT", "green")
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("完成")
+                msg_box.setText("图片快速导出已完成！")
+                msg_box.setIcon(QMessageBox.Information)
+
+                view_button = msg_box.addButton("查看", QMessageBox.ActionRole)
+                msg_box.addButton(QMessageBox.Ok)
+                
+                msg_box.exec_()
+                
+                if msg_box.clickedButton() == view_button:
+                    self.debug_log("用户点击查看按钮，打开输出目录", "QUICK_EXPORT", "blue")
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
+            
+            self.is_slicing = False
+            if self.debug_window:
+                self.debug_window.interrupt_btn.setEnabled(False)
+            
+        except Exception as e:
+            self.debug_log(f"快速导出过程中出现严重错误: {str(e)}", "ERROR", "red")
+            error_msg = f"快速导出过程中出错: {str(e)}"
+            QMessageBox.critical(self, "错误", error_msg)
+            self.set_progress_status("快速导出失败", "red")
+            self.is_slicing = False
+            if self.debug_window:
+                self.debug_window.interrupt_btn.setEnabled(False)
+    
     def check_all_file_conflicts(self, save_dir, base_name, file_format, direction, method, param):
         """检查所有可能产生的文件冲突"""
         if not self.image:
@@ -1019,8 +1475,11 @@ class ImageSlicer(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     
+    # 检查命令行参数
+    dropped_files = parse_command_line()
+    
     app.setApplicationName("E-IMG Slices")
-    app.setApplicationVersion("V1.1-Beta")
+    app.setApplicationVersion("V1.4-Beta")
     app.setOrganizationName("E-IMG")
 
     app.setStyleSheet("""
@@ -1057,6 +1516,20 @@ if __name__ == '__main__':
             background-color: #0059a8;
         }
         QPushButton:disabled {
+            background-color: #cccccc;
+            color: #666666;
+        }
+        /* 快速导出按钮特殊样式 - 通过对象名称选择器 */
+        QPushButton#quick_export_btn {
+            background-color: #FFA726;
+        }
+        QPushButton#quick_export_btn:hover {
+            background-color: #FFCC80;
+        }
+        QPushButton#quick_export_btn:pressed {
+            background-color: #FFD54F;
+        }
+        QPushButton#quick_export_btn:disabled {
             background-color: #cccccc;
             color: #666666;
         }
@@ -1108,5 +1581,14 @@ if __name__ == '__main__':
     window.show()
     
     debug_print("应用程序启动完成")
+    
+    # 设置快速导出按钮的对象名称，以便样式表选择器匹配
+    window.quick_export_btn.setObjectName("quick_export_btn")
+    
+    # 如果有拖放的文件，则使用第一个文件并执行快速导出
+    if dropped_files:
+        debug_print(f"检测到拖放文件: {dropped_files[0]}")
+        # 延迟执行，确保窗口完全加载
+        QTimer.singleShot(500, lambda: window.handle_dropped_file_at_startup(dropped_files[0]))
     
     sys.exit(app.exec_())
